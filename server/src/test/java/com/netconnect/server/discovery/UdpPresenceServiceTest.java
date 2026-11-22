@@ -52,6 +52,43 @@ class UdpPresenceServiceTest {
         return packet;
     }
 
+    @Test void productionSchedulerSendsTwoLoopbackClientsAtFiveSecondIntervals() throws Exception {
+        int port;
+        try (DatagramSocket reservation = new DatagramSocket(0)) {
+            port = reservation.getLocalPort();
+        }
+        try (DatagramSocket first = receiver(); DatagramSocket second = receiver();
+             var service = new UdpPresenceService(config(port), "timed-server", s -> LOOPBACK, () -> 9)) {
+            first.setSoTimeout(8000);
+            second.setSoTimeout(8000);
+            service.registerEndpoint(new TestSession("timed-one", "Alice"), first.getLocalPort());
+            service.registerEndpoint(new TestSession("timed-two", "Bobby"), second.getLocalPort());
+            service.start();
+            long[] previous = new long[2];
+            for (int round = 0; round < 2; round++) {
+                int index = 0;
+                for (DatagramSocket client : new DatagramSocket[]{first, second}) {
+                    DatagramPacket packet = receive(client);
+                    long now = System.nanoTime();
+                    assertEquals(port, packet.getPort());
+                    String[] fields = new String(packet.getData(), 0, packet.getLength(),
+                            StandardCharsets.UTF_8).split("\\|");
+                    assertEquals(4, fields.length);
+                    assertEquals("PRESENCE_V1", fields[0]);
+                    assertEquals("timed-server", fields[1]);
+                    assertEquals("9", fields[2]);
+                    assertTrue(Math.abs(System.currentTimeMillis() - Long.parseLong(fields[3])) < 2000);
+                    if (round > 0) {
+                        long interval = TimeUnit.NANOSECONDS.toMillis(now - previous[index]);
+                        assertTrue(interval >= 3500 && interval <= 6500,
+                                "Expected approximately 5 seconds; measured " + interval + " ms");
+                    }
+                    previous[index++] = now;
+                }
+            }
+        }
+    }
+
     @Test void deliversToTwoPortsWithCurrentRevisionAndConfiguredSourceThenCleansUp() throws Exception {
         try (DatagramSocket first = receiver(); DatagramSocket second = receiver();
              DatagramSocket sender = receiver()) {

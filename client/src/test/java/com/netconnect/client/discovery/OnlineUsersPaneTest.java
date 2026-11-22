@@ -58,4 +58,22 @@ class OnlineUsersPaneTest {
         assertThrows(IllegalStateException.class, pane::presentationState);
         assertThrows(IllegalArgumentException.class, () -> pane.onAuthoritativeRoster(-1, List.of()));
     }
+
+    @Test void fxThreadProcessesUpdatesWhileUdpWorkerWaitsForPackets() throws Exception {
+        OnlineUsersPane pane = onFx(OnlineUsersPane::new);
+        try (var server = new java.net.DatagramSocket(0);
+             var receiver = new UdpPresenceReceiver(pane::onLivenessChanged)) {
+            receiver.onAuthenticated(new java.net.InetSocketAddress(
+                    java.net.InetAddress.getLoopbackAddress(), server.getLocalPort()));
+            pane.onAuthoritativeRoster(1, List.of("Alice"));
+            FutureTask<Boolean> responsive = new FutureTask<>(() -> {
+                assertEquals(List.of("Alice"), pane.presentationState().users());
+                return Platform.isFxApplicationThread();
+            });
+            Platform.runLater(responsive);
+            assertTrue(responsive.get(1, TimeUnit.SECONDS));
+            receiver.close();
+            assertTrue(receiver.awaitTermination(1000));
+        }
+    }
 }
