@@ -13,8 +13,15 @@ public final class TlsControlServer {
     private TlsControlServer() { }
 
     public static SSLServerSocket bind(NetConnectConfig config, boolean allowTls12) throws IOException {
-        SSLServerSocket socket = (SSLServerSocket) SSLServerSocketFactory.getDefault()
-                .createServerSocket(config.controlPort());
+        return bind(config, (SSLServerSocketFactory) SSLServerSocketFactory.getDefault(), allowTls12);
+    }
+
+    public static SSLServerSocket bind(NetConnectConfig config, SSLContext context, boolean allowTls12) throws IOException {
+        return bind(config, context.getServerSocketFactory(), allowTls12);
+    }
+
+    private static SSLServerSocket bind(NetConnectConfig config, SSLServerSocketFactory factory, boolean allowTls12) throws IOException {
+        SSLServerSocket socket = (SSLServerSocket) factory.createServerSocket(config.controlPort());
         try {
             socket.setEnabledProtocols(allowTls12 ? new String[]{"TLSv1.3", "TLSv1.2"} : new String[]{"TLSv1.3"});
             return socket;
@@ -26,8 +33,20 @@ public final class TlsControlServer {
 
     /** Serves authentication only; authenticated feature dispatch remains with its owners. */
     public static void serve(SSLSocket socket, AuthService auth, SessionRegistry registry) throws IOException {
+        serve(socket, auth, registry, null);
+    }
+
+    /** Security-owned lifecycle adapter; shared service contracts remain unchanged. */
+    public interface Handler {
+        void connected(Session session, SSLSocket socket) throws IOException;
+        void request(Session session, Envelope request) throws IOException;
+        void disconnected(String sessionId);
+    }
+
+    public static void serve(SSLSocket socket, AuthService auth, SessionRegistry registry, Handler handler) throws IOException {
         String authenticatedId = null;
         String authenticatedName = null;
+        int deniedAttempts = 0;
         try (socket) {
             // Preserve the listener's TLS 1.2 opt-in while excluding legacy protocols.
             socket.setEnabledProtocols(java.util.Arrays.stream(socket.getEnabledProtocols())
@@ -56,6 +75,7 @@ public final class TlsControlServer {
                         authenticatedName = result.displayName();
                         payload.put("sessionId", authenticatedId).put("displayName", authenticatedName);
                     } else {
+                        deniedAttempts++;
                         payload.put("code", result.code());
                         payload.put("message", switch (result.code()) {
                             case "NAME_TAKEN" -> "That display name is already in use.";
@@ -65,16 +85,29 @@ public final class TlsControlServer {
                     }
                     if (authenticatedId != null) socket.setSoTimeout(0);
                 } else {
-                    responseType = EventType.ERROR;
                     boolean valid = AuthenticationState.permits(authenticatedId, authenticatedName, request, registry);
+                    if (valid && request.type() == EventType.DISCONNECT) break;
+                    if (valid && handler != null && request.type() != EventType.AUTH_LOGIN) {
+                        handler.request(registry.getByDisplayName(authenticatedName).orElseThrow(), request);
+                        continue;
+                    }
+                    responseType = EventType.ERROR;
                     payload.put("code", valid ? "INVALID_REQUEST" : "NOT_AUTHENTICATED");
                 }
                 Envelope response = Envelope.request(responseType, request.requestId(), authenticatedId, payload);
-                output.write((EnvelopeCodec.encode(response) + "\n").getBytes(StandardCharsets.UTF_8));
-                output.flush();
+                synchronized (output) {
+                    output.write((EnvelopeCodec.encode(response) + "\n").getBytes(StandardCharsets.UTF_8));
+                    output.flush();
+                }
+                if (responseType == EventType.AUTH_OK && handler != null)
+                    handler.connected(registry.getByDisplayName(authenticatedName).orElseThrow(), socket);
+                if (deniedAttempts >= 5) break;
             }
         } finally {
-            if (authenticatedId != null) registry.remove(authenticatedId);
+            if (authenticatedId != null) {
+                registry.remove(authenticatedId);
+                if (handler != null) handler.disconnected(authenticatedId);
+            }
         }
     }
 
