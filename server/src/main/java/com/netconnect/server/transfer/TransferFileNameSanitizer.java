@@ -1,8 +1,5 @@
 package com.netconnect.server.transfer;
 
-import java.nio.file.Path;
-import java.nio.file.Paths;
-
 /**
  * Sanitizes file names to prevent path traversal (NFR-03, NFR-04).
  * Strips directory paths and invalid characters, ensuring the name is a safe single file name.

@@ -1,7 +1,5 @@
 package com.netconnect.server.transfer;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-
 import java.io.Closeable;
 import java.io.IOException;
 import java.net.InetSocketAddress;
@@ -16,14 +14,12 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
 import java.util.HexFormat;
 import java.util.Iterator;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
@@ -311,7 +307,6 @@ public final class NioFileServer implements Closeable, Runnable {
         }
 
         attachment.transfer = transfer;
-        attachment.role = handshake.role();
 
         if ("SEND".equals(handshake.role())) {
             transfer.setSenderChannel((SocketChannel) key.channel());
@@ -575,7 +570,6 @@ public final class NioFileServer implements Closeable, Runnable {
         Runnable afterResponseAction;
 
         ActiveTransfer transfer;
-        String role;
 
         FileChannel stagingFileChannel;
         MessageDigest digest;

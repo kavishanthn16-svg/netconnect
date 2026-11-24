@@ -350,7 +350,6 @@ public final class FileTransferPane extends VBox {
                     if (sendPath == null || !Files.exists(sendPath)) {
                         throw new IOException("Local file to send not found for transfer " + transferId);
                     }
-                    long total = Files.size(sendPath);
                     dispatchUi(() -> statusLabel.setText("Sending raw bytes via NIO..."));
 
                     NioFileSender.sendFile(host, port, transferId, ticket, sendPath, (sent, totalBytes) -> {
