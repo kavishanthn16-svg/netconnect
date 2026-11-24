@@ -1,4 +1,4 @@
-param([ValidateSet('Server','Client')][string]$Mode = 'Client')
+param([ValidateSet('Server','Client','ProductionServer','ProductionClient')][string]$Mode = 'Client')
 $ErrorActionPreference = 'Stop'
 # Run from the repository root after mvn -B clean verify. No dependency installation.
 $repo = (Get-Location).Path
@@ -10,9 +10,10 @@ $jackson = @('jackson-annotations','jackson-core','jackson-databind') | ForEach-
     if (!(Test-Path $jar)) { throw "Missing build dependency: $jar" }
     $jar
 }
-if ($Mode -eq 'Server') {
+if ($Mode -eq 'Server' -or $Mode -eq 'ProductionServer') {
     $cp = (@((Join-Path $repo 'server/target/classes'),(Join-Path $repo 'common/target/classes')) + $jackson) -join ';'
-    & $java -cp $cp com.netconnect.server.security.SecurityDemoServer
+    $entry = if ($Mode -eq 'ProductionServer') { 'com.netconnect.server.bootstrap.NetConnectServer' } else { 'com.netconnect.server.security.SecurityDemoServer' }
+    & $java -cp $cp $entry
 } else {
     $cp = (@((Join-Path $repo 'client/target/classes'),(Join-Path $repo 'common/target/classes')) + $jackson) -join ';'
     $fx = @('base','graphics','controls') | ForEach-Object {
@@ -20,6 +21,7 @@ if ($Mode -eq 'Server') {
         if (!(Test-Path $jar)) { throw "Missing JavaFX dependency: $jar" }
         $jar
     }
-    & $java --module-path ($fx -join ';') --add-modules javafx.controls -cp $cp com.netconnect.client.security.SecureLoginLauncher
+    $entry = if ($Mode -eq 'ProductionClient') { 'com.netconnect.client.shell.NetConnectClient' } else { 'com.netconnect.client.security.SecureLoginLauncher' }
+    & $java --module-path ($fx -join ';') --add-modules javafx.controls -cp $cp $entry
 }
 if ($LASTEXITCODE -ne 0) { throw "Demo exited with code $LASTEXITCODE" }
