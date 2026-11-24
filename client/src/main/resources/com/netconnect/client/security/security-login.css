@@ -1,0 +1,10 @@
+.security-login { -fx-background-color: #0c1930; -fx-font-family: "Segoe UI"; -fx-font-size: 14px; }
+.security-login .label { -fx-text-fill: #e2edff; }
+.security-login .brand { -fx-font-size: 32px; -fx-font-weight: bold; -fx-text-fill: #78b9ff; }
+.security-login .text-field { -fx-background-color: #1b2f4b; -fx-text-fill: #ffffff; -fx-prompt-text-fill: #b0c2d9; -fx-background-radius: 9; -fx-border-radius: 9; -fx-border-color: #496080; -fx-padding: 10 12; }
+.security-login .text-field:focused { -fx-border-color: #83bdff; }
+.security-login .button { -fx-background-color: #2168cf; -fx-text-fill: white; -fx-font-weight: bold; -fx-background-radius: 9; -fx-padding: 12 18; -fx-cursor: hand; }
+.security-login .button:hover { -fx-background-color: #317be6; }
+.security-login .button:focused { -fx-border-color: #a9d2ff; -fx-border-radius: 9; }
+.security-login .button:disabled { -fx-opacity: 0.55; }
+.security-login .progress-indicator { -fx-progress-color: #78b9ff; }
