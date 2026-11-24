@@ -18,6 +18,7 @@ public final class SecureLoginConnection implements AutoCloseable {
     private final boolean allowTls12;
     private int responseTimeoutMillis = 10000;
     private SSLSocket socket;
+    private Envelope authentication;
 
     /** Uses the JVM's configured trust anchors and retains hostname verification. */
     public SecureLoginConnection(boolean allowTls12) throws GeneralSecurityException {
@@ -82,6 +83,7 @@ public final class SecureLoginConnection implements AutoCloseable {
                     || !response.payload().path("code").isTextual() || response.payload().path("code").asText().isBlank())))
                 throw new IOException("Unexpected authentication response");
             if (response.type() == EventType.AUTH_DENIED) close();
+            else authentication = response;
             return response;
         } catch (IOException | RuntimeException failure) {
             try { close(); } catch (IOException ignored) { }
@@ -89,7 +91,23 @@ public final class SecureLoginConnection implements AutoCloseable {
         }
     }
 
+    /**
+     * Transfers the existing verified TLS socket to the shell after AUTH_OK.
+     * The caller becomes its sole owner and must close it, run reads off the FX thread,
+     * and apply the application's liveness/read-timeout policy. No new connection is opened.
+     * The login timeout remains in force until the new owner configures its policy.
+     */
+    public synchronized SSLSocket detachAuthenticatedSocket() throws IOException {
+        if (socket == null || socket.isClosed() || authentication == null)
+            throw new IOException("An authenticated connection is required");
+        SSLSocket authenticated = socket;
+        socket = null;
+        authentication = null;
+        return authenticated;
+    }
+
     @Override public synchronized void close() throws IOException {
+        authentication = null;
         if (socket != null) { try { socket.close(); } finally { socket = null; } }
     }
 }

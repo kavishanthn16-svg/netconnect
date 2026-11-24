@@ -33,10 +33,15 @@ public final class SecureLoginPane extends VBox {
         code.setPromptText("Shared access code");
         TextField host = new TextField(config.serverHost());
         TextField port = new TextField(Integer.toString(config.controlPort()));
+        name.setAccessibleText("Display name, 3 to 24 characters");
+        code.setAccessibleText("Shared access code");
+        host.setAccessibleText("Server host");
+        port.setAccessibleText("Control port");
         Button login = new Button("Connect securely");
         login.setDefaultButton(true);
         login.setMaxWidth(Double.MAX_VALUE);
         Label feedback = new Label("Ready - TLS certificate verification enabled");
+        feedback.setAccessibleRole(javafx.scene.AccessibleRole.TEXT);
         feedback.setWrapText(true);
         feedback.setMinHeight(50);
         ProgressIndicator progress = new ProgressIndicator();
@@ -94,6 +99,7 @@ public final class SecureLoginPane extends VBox {
                         case "INVALID_REQUEST" -> "Check your display name and access code.";
                         default -> "Login denied. Check your access code.";
                     });
+                    code.requestFocus();
                 }
             });
             task.setOnFailed(done -> {
@@ -104,6 +110,7 @@ public final class SecureLoginPane extends VBox {
                         : task.getException() instanceof SocketTimeoutException
                         ? "Connection timed out. Check the server and retry."
                         : "Could not connect securely. Check the server address and retry.");
+                code.requestFocus();
             });
             run(task);
         });
