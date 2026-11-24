@@ -305,7 +305,7 @@ public final class NioFileServer implements Closeable, Runnable {
         );
 
         if (ticketOpt.isEmpty()) {
-            LOGGER.warning("Invalid, expired, or mismatched ticket: " + handshake.ticket());
+            LOGGER.warning("Invalid, expired, or mismatched transfer ticket");
             sendHandshakeResponseAndClose(key, (byte) 0);
             return;
         }

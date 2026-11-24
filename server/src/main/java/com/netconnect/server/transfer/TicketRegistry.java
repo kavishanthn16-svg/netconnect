@@ -11,6 +11,12 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public final class TicketRegistry {
 
+    private final java.util.function.Predicate<TransferTicket> active;
+    public TicketRegistry() { this(ticket -> true); }
+    public TicketRegistry(java.util.function.Predicate<TransferTicket> active) {
+        this.active = Objects.requireNonNull(active);
+    }
+
     private final Map<String, TransferTicket> tickets = new ConcurrentHashMap<>();
 
     public void register(TransferTicket ticket) {
@@ -22,15 +28,16 @@ public final class TicketRegistry {
      * Validates and atomically consumes a one-time ticket.
      * Returns the ticket if valid, or empty if invalid, wrong role/transfer, or expired.
      */
-    public Optional<TransferTicket> validateAndConsume(String ticketStr, UUID transferId, String role, long nowMillis) {
+    public synchronized Optional<TransferTicket> validateAndConsume(String ticketStr, UUID transferId, String role, long nowMillis) {
         if (ticketStr == null || transferId == null || role == null) {
             return Optional.empty();
         }
-        TransferTicket ticket = tickets.remove(ticketStr);
+        TransferTicket ticket = tickets.get(ticketStr);
         if (ticket == null) {
             return Optional.empty();
         }
-        if (ticket.isExpired(nowMillis)) {
+        if (nowMillis >= ticket.expiresAtMillis()) {
+            tickets.remove(ticketStr, ticket);
             return Optional.empty();
         }
         if (!ticket.transferId().equals(transferId)) {
@@ -39,7 +46,11 @@ public final class TicketRegistry {
         if (!ticket.role().equals(role)) {
             return Optional.empty();
         }
-        return Optional.of(ticket);
+        if (!active.test(ticket)) {
+            tickets.remove(ticketStr, ticket);
+            return Optional.empty();
+        }
+        return tickets.remove(ticketStr, ticket) ? Optional.of(ticket) : Optional.empty();
     }
 
     public void invalidateForTransfer(UUID transferId) {

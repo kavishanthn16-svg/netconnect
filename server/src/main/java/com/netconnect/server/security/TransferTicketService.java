@@ -19,7 +19,7 @@ public final class TransferTicketService {
     private final Map<String, TransferTicketValidation.Ticket> tickets = new HashMap<>();
 
     public TransferTicketService(SessionRegistry registry) { this(registry, Clock.systemUTC()); }
-    TransferTicketService(SessionRegistry registry, Clock clock) {
+    public TransferTicketService(SessionRegistry registry, Clock clock) {
         this.registry = Objects.requireNonNull(registry);
         this.clock = Objects.requireNonNull(clock);
     }

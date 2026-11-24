@@ -11,6 +11,7 @@ import com.netconnect.common.contracts.TransferService;
 import com.netconnect.common.protocol.Envelope;
 import com.netconnect.common.protocol.ErrorCode;
 import com.netconnect.common.protocol.EventType;
+import com.netconnect.server.security.TransferTicketService;
 
 import java.io.IOException;
 import java.nio.file.Path;
@@ -39,6 +40,7 @@ public final class NioTransferService implements TransferService, AutoCloseable 
     private final ControlGateway controlGateway;
     private final Clock clock;
     private final TicketRegistry ticketRegistry;
+    private final TransferTicketService securityTickets;
     private final ConcurrentMap<UUID, ActiveTransfer> activeTransfers = new ConcurrentHashMap<>();
     private final NioFileServer nioFileServer;
 
@@ -58,7 +60,14 @@ public final class NioTransferService implements TransferService, AutoCloseable 
         this.sessionRegistry = Objects.requireNonNull(sessionRegistry, "sessionRegistry");
         this.controlGateway = Objects.requireNonNull(controlGateway, "controlGateway");
         this.clock = Objects.requireNonNull(clock, "clock");
-        this.ticketRegistry = new TicketRegistry();
+        this.securityTickets = new TransferTicketService(sessionRegistry, clock);
+        this.ticketRegistry = new TicketRegistry(ticket -> {
+            ActiveTransfer transfer = activeTransfers.get(ticket.transferId());
+            if (transfer == null || transfer.isTerminal()) return false;
+            Session owner = "SEND".equals(ticket.role()) ? transfer.sender() : transfer.recipient();
+            return ticket.sessionId().equals(owner.sessionId()) && securityTickets.consume(ticket.ticket(),
+                    ticket.transferId(), owner, TransferTicketService.Role.valueOf(ticket.role()));
+        });
         this.nioFileServer = new NioFileServer(
                 config.transferPort(),
                 this.ticketRegistry,
@@ -96,11 +105,11 @@ public final class NioTransferService implements TransferService, AutoCloseable 
     }
 
     @Override
-    public void offer(Session sender, FileOffer offer) {
+    public synchronized void offer(Session sender, FileOffer offer) {
         Objects.requireNonNull(sender, "sender");
         Objects.requireNonNull(offer, "offer");
 
-        if (sender.sessionId() == null || sender.sessionId().isBlank()) {
+        if (!isActive(sender)) {
             sendError(sender, ErrorCode.NOT_AUTHENTICATED, "Sender is not authenticated");
             return;
         }
@@ -167,8 +176,12 @@ public final class NioTransferService implements TransferService, AutoCloseable 
     }
 
     @Override
-    public void decide(Session recipient, String transferIdStr, boolean accepted) {
+    public synchronized void decide(Session recipient, String transferIdStr, boolean accepted) {
         Objects.requireNonNull(recipient, "recipient");
+        if (!isActive(recipient)) {
+            sendError(recipient, ErrorCode.NOT_AUTHENTICATED, "Recipient is not authenticated");
+            return;
+        }
         if (transferIdStr == null || transferIdStr.isBlank()) {
             sendError(recipient, ErrorCode.INVALID_REQUEST, "Invalid transferId");
             return;
@@ -218,8 +231,8 @@ public final class NioTransferService implements TransferService, AutoCloseable 
         // Accepted: issue tickets and send FILE_READY
         activeTransfer.transitionTo(ActiveTransfer.State.ACCEPTED);
 
-        String senderTicket = UUID.randomUUID().toString();
-        String receiverTicket = UUID.randomUUID().toString();
+        String senderTicket = securityTickets.issue(transferId, activeTransfer.sender(), TransferTicketService.Role.SEND);
+        String receiverTicket = securityTickets.issue(transferId, recipient, TransferTicketService.Role.RECEIVE);
         long expiresAt = clock.millis() + TICKET_EXPIRY_MILLIS;
 
         ticketRegistry.register(new TransferTicket(
@@ -275,11 +288,12 @@ public final class NioTransferService implements TransferService, AutoCloseable 
         LOGGER.log(Level.INFO, "Transfer accepted, FILE_READY dispatched: id={0}", transferId);
     }
 
-    public void handleDisconnect(String sessionId) {
+    public synchronized void handleDisconnect(String sessionId) {
         if (sessionId == null) {
             return;
         }
         ticketRegistry.invalidateForSession(sessionId);
+        securityTickets.revokeSession(sessionId);
 
         for (ActiveTransfer transfer : activeTransfers.values()) {
             if (!transfer.isTerminal()) {
@@ -349,6 +363,11 @@ public final class NioTransferService implements TransferService, AutoCloseable 
         } catch (Exception e) {
             LOGGER.log(Level.WARNING, "Failed to send ERROR to " + session.displayName(), e);
         }
+    }
+
+    private boolean isActive(Session session) {
+        return sessionRegistry.getByDisplayName(session.displayName())
+                .filter(active -> Objects.equals(active.sessionId(), session.sessionId())).isPresent();
     }
 
     @Override
