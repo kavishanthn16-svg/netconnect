@@ -40,6 +40,30 @@ class SecurityTest {
         assertEquals("NAME_TAKEN", auth.authenticate("ALICE", "test-only-access-code").code());
     }
 
+    @Test void concurrentLoginsReserveOneNameAndAllowReuseAfterDisconnect() throws Exception {
+        try (var workers = java.util.concurrent.Executors.newFixedThreadPool(8)) {
+            var ready = new java.util.concurrent.CountDownLatch(8);
+            var start = new java.util.concurrent.CountDownLatch(1);
+            var attempts = new java.util.ArrayList<java.util.concurrent.Future<AuthResult>>();
+            for (int i = 0; i < 8; i++) attempts.add(workers.submit(() -> {
+                ready.countDown();
+                assertTrue(start.await(3, java.util.concurrent.TimeUnit.SECONDS));
+                return auth.authenticate("Alice", "test-only-access-code");
+            }));
+            assertTrue(ready.await(3, java.util.concurrent.TimeUnit.SECONDS));
+            start.countDown();
+            int successes = 0;
+            for (var attempt : attempts) {
+                AuthResult result = attempt.get(3, java.util.concurrent.TimeUnit.SECONDS);
+                if (result.authenticated()) successes++;
+                else assertEquals("NAME_TAKEN", result.code());
+            }
+            assertEquals(1, successes);
+            registry.remove(registry.getByDisplayName("Alice").orElseThrow().sessionId());
+            assertTrue(auth.authenticate("Alice", "test-only-access-code").authenticated());
+        }
+    }
+
     @Test void authenticationStateRejectsSpoofedAndRemovedSessions() {
         AuthResult result = auth.authenticate("Alice", "test-only-access-code");
         Envelope request = Envelope.request(EventType.CHAT_GROUP_SEND, UUID.randomUUID(), result.sessionId(),

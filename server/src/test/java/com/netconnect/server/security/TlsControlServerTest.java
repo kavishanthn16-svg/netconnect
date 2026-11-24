@@ -62,6 +62,17 @@ class TlsControlServerTest {
         assertTrue(registry.listUsers().isEmpty());
     }
 
+    @Test void repeatedDeniedLoginsAreBounded() throws Exception {
+        var registry = new ConcurrentSessionRegistry();
+        var login = Envelope.request(EventType.AUTH_LOGIN, UUID.randomUUID(), null,
+                JsonNodeFactory.instance.objectNode().put("displayName", "Alice").put("accessCode", "wrong"));
+        var socket = new MemorySocket((EnvelopeCodec.encode(login) + "\n").repeat(10));
+        TlsControlServer.serve(socket, new EnvironmentAuthService(registry, () -> "test-code"), registry);
+        assertEquals(5, socket.output.toString(StandardCharsets.UTF_8).lines().count());
+        assertTrue(socket.closed);
+        assertTrue(registry.listUsers().isEmpty());
+    }
+
     private static class MemorySocket extends SSLSocket {
         final InputStream input;
         final ByteArrayOutputStream output = new ByteArrayOutputStream();
