@@ -71,7 +71,7 @@ public final class NetConnectClient extends Application {
                     new Label("Connected over verified TLS as " + result.payload().path("displayName").asText()), logout,
                     new Label("Configured server: " + config.serverHost() + ":" + config.controlPort()));
             header.setPadding(new Insets(12));
-            TabPane navigation = new TabPane(new Tab("Chat", new Label("Chat view placeholder — owned by 234229X.")),
+            TabPane navigation = new TabPane(new Tab("Chat", new Label()),
                     new Tab("Online Users", users), new Tab("File Transfers", filePane));
             navigation.setTabClosingPolicy(TabPane.TabClosingPolicy.UNAVAILABLE);
             stage.setScene(new Scene(new BorderPane(navigation, header, null, null, null), 860, 740));
