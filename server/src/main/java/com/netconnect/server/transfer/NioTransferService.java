@@ -299,7 +299,7 @@ public final class NioTransferService implements TransferService, AutoCloseable 
             if (!transfer.isTerminal()) {
                 if (transfer.sender().sessionId().equals(sessionId)
                         || transfer.recipient().sessionId().equals(sessionId)) {
-                    LOGGER.info("Aborting transfer " + transfer.transferId() + " due to session disconnect: " + sessionId);
+                    LOGGER.info("Aborting transfer " + transfer.transferId() + " because a participant disconnected");
                     transfer.fail("Session disconnected");
                     ticketRegistry.invalidateForTransfer(transfer.transferId());
 

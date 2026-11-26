@@ -280,7 +280,7 @@ public final class NioFileServer implements Closeable, Runnable {
         try {
             handshake = NioHandshake.decode(jsonBytes);
         } catch (Exception e) {
-            LOGGER.log(Level.WARNING, "Handshake decode failed", e);
+            LOGGER.warning("Handshake decode failed: malformed request rejected");
             sendHandshakeResponseAndClose(key, (byte) 0);
             return;
         }

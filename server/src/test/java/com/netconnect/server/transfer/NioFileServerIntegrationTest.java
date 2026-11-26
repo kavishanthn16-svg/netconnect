@@ -17,6 +17,12 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.ByteArrayOutputStream;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
+import java.net.Socket;
+import java.nio.charset.StandardCharsets;
+import java.util.logging.Handler;
+import java.util.logging.LogRecord;
+import java.util.logging.Logger;
+import java.util.logging.SimpleFormatter;
 import java.nio.ByteBuffer;
 import java.nio.channels.SocketChannel;
 import java.nio.file.Files;
@@ -35,6 +41,8 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class NioFileServerIntegrationTest {
@@ -305,6 +313,70 @@ class NioFileServerIntegrationTest {
         assertTrue(gateway.waitForResult(alice.sessionId(), transferId, 3000));
         Envelope result = gateway.findFirstFor(alice.sessionId(), EventType.FILE_RESULT);
         assertEquals("FAILED", result.payload().get("status").asText());
+    }
+
+    @Test
+    @org.junit.jupiter.api.Timeout(10)
+    void malformedHandshakesRejectWithoutLoggingTicketDataOrExceptionCauses() throws Exception {
+        String marker = "SYNTHETIC_SECRET_TICKET";
+        String prefix = "{\"v\":1,\"transferId\":\"00000000-0000-0000-0000-000000000001\",\"ticket\":";
+        // Exercise both Jackson parse failures and validation failures with secret-bearing causes.
+        List<String> malformed = List.of(prefix + marker + ",\"role\":\"SEND\"}",
+                prefix + "\"" + marker + "\",\"role\":\"" + marker + "\"}");
+        Logger logger = Logger.getLogger(NioFileServer.class.getName());
+        try (LogCapture capture = new LogCapture(logger)) {
+            for (String payload : malformed) {
+                byte[] json = payload.getBytes(StandardCharsets.UTF_8);
+                ByteBuffer frame = ByteBuffer.allocate(4 + json.length).putInt(json.length).put(json);
+                try (Socket client = new Socket("localhost", freeNioPort)) {
+                    client.setSoTimeout(2000);
+                    client.getOutputStream().write(frame.array());
+                    assertEquals(0, client.getInputStream().read(), "Malformed handshake must be rejected");
+                    assertEquals(-1, client.getInputStream().read(), "Rejected connection must close");
+                }
+            }
+            List<LogRecord> failures = capture.records.stream()
+                    .filter(record -> record.getMessage().startsWith("Handshake decode failed")).toList();
+            assertEquals(2, failures.size());
+            for (LogRecord record : failures) {
+                assertNull(record.getThrown(), "A nested parser exception can contain ticket data");
+                assertFalse(new SimpleFormatter().format(record).contains(marker));
+            }
+        }
+    }
+
+    @Test
+    void disconnectLogRetainsTransferDiagnosticsWithoutSessionIdentifiers() throws Exception {
+        UUID transferId = UUID.randomUUID();
+        try (LogCapture capture = new LogCapture(Logger.getLogger(NioTransferService.class.getName()))) {
+            transferService.offer(alice, new FileOffer(transferId, "Bob", "disconnect.txt", 1,
+                    sha256Of(new byte[]{1})));
+            transferService.decide(bob, transferId.toString(), true);
+            assertEquals(2, transferService.ticketRegistry().size());
+            registry.remove(alice.sessionId());
+            transferService.handleDisconnect(alice.sessionId());
+            String rendered = capture.records.stream().map(new SimpleFormatter()::format)
+                    .collect(java.util.stream.Collectors.joining());
+            assertFalse(rendered.contains(alice.sessionId()));
+            assertFalse(rendered.contains(bob.sessionId()));
+            assertTrue(rendered.contains("Aborting transfer " + transferId));
+            assertTrue(rendered.contains("disconnected"));
+            assertTrue(transferService.activeTransfers().isEmpty());
+            assertEquals(0, transferService.ticketRegistry().size());
+            Envelope result = gateway.findFirstFor(bob.sessionId(), EventType.FILE_RESULT);
+            assertNotNull(result);
+            assertEquals("FAILED", result.payload().path("status").asText());
+            assertEquals("USER_OFFLINE", result.payload().path("code").asText());
+        }
+    }
+
+    private static final class LogCapture extends Handler implements AutoCloseable {
+        final List<LogRecord> records = new CopyOnWriteArrayList<>();
+        private final Logger logger;
+        LogCapture(Logger logger) { this.logger = logger; logger.addHandler(this); }
+        @Override public void publish(LogRecord record) { records.add(record); }
+        @Override public void flush() { }
+        @Override public void close() { logger.removeHandler(this); }
     }
 
     private void executeTransferTest(int size) throws Exception {
