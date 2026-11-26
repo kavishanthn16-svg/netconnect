@@ -6,6 +6,8 @@ import com.netconnect.common.protocol.*;
 import com.netconnect.client.security.*;
 import com.netconnect.client.transfer.FileTransferPane;
 import com.netconnect.client.discovery.OnlineUsersPane;
+import com.netconnect.client.chat.ChatPane;
+import com.netconnect.client.chat.ChatSender;
 import javafx.application.Application;
 import javafx.application.Platform;
 import javafx.scene.Scene;
@@ -22,6 +24,7 @@ public final class NetConnectClient extends Application {
     private SecureLoginConnection login;
     private AuthenticatedControlConnection control;
     private FileTransferPane transfers;
+    private ChatPane chats;
     private Stage stage;
     private boolean stopped;
 
@@ -103,14 +106,16 @@ public final class NetConnectClient extends Application {
             HBox.setHgrow(headerSpacer, Priority.ALWAYS);
             HBox header = new HBox(16, pageTitle, headerSpacer, secure);
             header.getStyleClass().add("page-header");
-            Label chatTitle = new Label("Your conversations start here");
-            chatTitle.getStyleClass().add("section-title");
-            Label chatDescription = new Label("Chat is not available yet.\nYou can view online users and share files.");
-            chatDescription.setWrapText(true);
-            chatDescription.getStyleClass().add("muted");
-            VBox chat = new VBox(12, chatTitle, chatDescription);
-            chat.setAlignment(javafx.geometry.Pos.CENTER);
-            chat.getStyleClass().add("empty-state");
+            var chat = new ChatPane(displayName, new ChatSender() {
+                @Override public void sendGroup(String text) {
+                    connection.send(EventType.CHAT_GROUP_SEND, JsonNodeFactory.instance.objectNode().put("text", text));
+                }
+                @Override public void sendPrivate(String toUser, String text) {
+                    connection.send(EventType.CHAT_PRIVATE_SEND,
+                            JsonNodeFactory.instance.objectNode().put("toUser", toUser).put("text", text));
+                }
+            });
+            chats = chat;
             BorderPane content = new BorderPane(chat, header, null, null, null);
             ToggleGroup group = new ToggleGroup();
             VBox links = new VBox(6);
@@ -156,6 +161,7 @@ public final class NetConnectClient extends Application {
                         List<String> names = new ArrayList<>();
                         p.path("users").forEach(name -> names.add(name.asText()));
                         users.onAuthoritativeRoster(p.path("revision").asLong(), names);
+                        chat.onRoster(names);
                         filePane.updateOnlineUsers(names.stream().filter(name -> !name.equals(result.payload().path("displayName").asText())).toList());
                     }
                     case FILE_OFFERED -> filePane.onFileOffered(UUID.fromString(p.path("transferId").asText()),
@@ -164,10 +170,16 @@ public final class NetConnectClient extends Application {
                             p.path("host").asText(), p.path("port").asInt(), p.path("role").asText(), p.path("expiresAt").asLong());
                     case FILE_RESULT -> filePane.onFileResult(UUID.fromString(p.path("transferId").asText()), p.path("status").asText(),
                             p.path("code").asText(), p.path("message").asText());
-                    case ERROR -> filePane.onError(p.path("code").asText(), p.path("message").asText());
+                    case CHAT_DELIVER -> chat.onDeliver(envelope);
+                    case ERROR -> {
+                        chat.onServerError(p.path("code").asText(), p.path("message").asText());
+                        filePane.onError(p.path("code").asText(), p.path("message").asText());
+                    }
                     default -> { }
                 }
             }), () -> Platform.runLater(() -> {
+                chat.setSendingEnabled(false);
+                chat.close();
                 filePane.shutdown();
                 if (control == connection) { control = null; transfers = null; if (!stopped) showLogin(disconnectRequested[0]
                         ? "Disconnected. You can connect again when you're ready."
@@ -185,6 +197,7 @@ public final class NetConnectClient extends Application {
     @Override public void stop() {
         stopped = true;
         if (transfers != null) transfers.shutdown();
+        if (chats != null) chats.close();
         if (control != null) control.close();
         Thread.ofVirtual().name("netconnect-login-cleanup").start(() -> {
             try { if (login != null) login.close(); } catch (java.io.IOException ignored) { }
