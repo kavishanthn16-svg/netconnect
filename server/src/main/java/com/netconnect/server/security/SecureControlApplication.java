@@ -26,6 +26,8 @@ public final class SecureControlApplication implements AutoCloseable, ControlGat
     private final NioTransferService transfers;
     private final AuthService auth;
     private final ThreadLocal<UUID> requestId = new ThreadLocal<>();
+    private final com.netconnect.server.chat.ChatEnvelopeHandler chat = new com.netconnect.server.chat.ChatEnvelopeHandler(
+            new com.netconnect.server.chat.ChatMessageRouter(registry, this));
     private volatile boolean closed;
 
     private static SessionExecutorConfig workerConfig() {
@@ -84,6 +86,7 @@ public final class SecureControlApplication implements AutoCloseable, ControlGat
         try {
             switch (request.type()) {
                 case USER_ROSTER -> sendRoster(session, request.requestId());
+                case CHAT_GROUP_SEND, CHAT_PRIVATE_SEND -> chat.handle(session, request);
                 case FILE_OFFER -> {
                     if (!p.path("sizeBytes").isIntegralNumber() || !p.path("sizeBytes").canConvertToLong()
                             || !text(p, "sha256").matches("[0-9a-fA-F]{64}")) throw new IllegalArgumentException();
