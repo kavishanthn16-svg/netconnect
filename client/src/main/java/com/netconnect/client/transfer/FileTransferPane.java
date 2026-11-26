@@ -2,6 +2,9 @@ package com.netconnect.client.transfer;
 
 import com.netconnect.common.contracts.FileOffer;
 import javafx.application.Platform;
+import com.netconnect.client.ui.Ui;
+import static com.netconnect.client.ui.Ui.Tone.*;
+import javafx.scene.control.TitledPane;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.control.Alert;
@@ -75,8 +78,8 @@ public final class FileTransferPane extends VBox {
     // Outgoing transfer controls
     private final ComboBox<String> recipientCombo = new ComboBox<>();
     private final Label selectedFileLabel = new Label("No file selected");
-    private final Label fileHashLabel = new Label("SHA-256: -");
-    private final Button sendOfferButton = new Button("Send File Offer");
+    private final Label fileHashLabel = new Label("Choose a file to calculate its SHA-256 fingerprint.");
+    private final Button sendOfferButton = new Button("Send File Request");
     private Path selectedFilePath;
     private String selectedFileSha256;
     private long selectedFileSize;
@@ -90,41 +93,70 @@ public final class FileTransferPane extends VBox {
 
     // Progress controls
     private final ProgressBar progressBar = new ProgressBar(0.0);
-    private final Label progressTextLabel = new Label("Idle");
+    private final Label progressTextLabel = new Label("No transfer in progress");
     private final Label statusLabel = new Label("Ready");
 
     // Activity log
     private final ListView<String> activityLog = new ListView<>();
+    // Presentation-only completion tracking prevents late progress callbacks from hiding a failure.
+    private final java.util.Set<UUID> failedTransfers = new java.util.HashSet<>();
+    private final java.util.Set<UUID> receivingTransfers = new java.util.HashSet<>();
+    private final java.util.Set<UUID> verifiedDownloads = new java.util.HashSet<>();
+    private final java.util.Set<UUID> completedTransfers = new java.util.HashSet<>();
 
     public record IncomingOffer(UUID transferId, String fromUser, String fileName, long sizeBytes, String sha256) {}
 
     public FileTransferPane() {
-        setSpacing(12);
-        setPadding(new Insets(16));
+        getStyleClass().add("file-transfers");
+        setSpacing(10);
+        setPadding(new Insets(20));
 
         // Header
-        Label heading = new Label("File Transfers (NIO Port 5052)");
-        heading.setStyle("-fx-font-size: 18px; -fx-font-weight: bold;");
-        Label notice = new Label("NIO file channel is high-performance binary transport. Limitation: Plaintext in v1.");
-        notice.setStyle("-fx-text-fill: #666666; -fx-font-style: italic;");
+        Label heading = new Label("Share a file");
+        heading.getStyleClass().add("section-title");
+        Label notice = new Label();
+        Ui.feedback(notice, WARNING, "Files are not encrypted during transfer. Your sign-in and file requests use a secure connection.");
+        Ui.feedback(statusLabel, NEUTRAL, "Ready to share a file.");
+        Ui.tone(progressBar, NEUTRAL);
+        notice.setWrapText(true);
+        statusLabel.setWrapText(true);
+        progressTextLabel.setWrapText(true);
+        activityLog.setPlaceholder(new Label("No transfer activity yet"));
+        activityLog.setCellFactory(list -> new javafx.scene.control.ListCell<>() {
+            @Override protected void updateItem(String item, boolean empty) {
+                super.updateItem(item, empty);
+                setText(null);
+                Label text = new Label(empty ? "" : item);
+                text.setWrapText(true);
+                text.prefWidthProperty().bind(list.widthProperty().subtract(44));
+                text.setMinWidth(0);
+                setGraphic(empty ? null : text);
+            }
+        });
 
         // --- Outgoing Offer Section ---
         VBox sendBox = createSendSection();
 
-        // --- Incoming Offers Section ---
+        // --- Incoming File Requests Section ---
         incomingOffersBox.setSpacing(6);
-        Label incomingTitle = new Label("Incoming Offers");
-        incomingTitle.setStyle("-fx-font-weight: bold; -fx-font-size: 14px;");
-        VBox incomingContainer = new VBox(6, incomingTitle, incomingOffersBox);
-        incomingContainer.setStyle("-fx-border-color: #d0d0d0; -fx-border-radius: 4; -fx-padding: 8;");
+        Label noOffers = new Label("No incoming requests");
+        noOffers.getStyleClass().add("muted");
+        noOffers.visibleProperty().bind(javafx.beans.binding.Bindings.isEmpty(incomingOffersBox.getChildren()));
+        noOffers.managedProperty().bind(noOffers.visibleProperty());
+        Label incomingTitle = new Label("Incoming File Requests");
+        incomingTitle.getStyleClass().add("section-title");
+        VBox incomingContainer = new VBox(6, incomingTitle, noOffers, incomingOffersBox);
+        incomingContainer.getStyleClass().add("card");
 
         // --- Progress Section ---
         VBox progressBox = createProgressSection();
 
         // --- Log Section ---
-        Label logTitle = new Label("Transfer Activity Log");
-        logTitle.setStyle("-fx-font-weight: bold;");
-        activityLog.setPrefHeight(120);
+        Label logTitle = new Label("Transfer History");
+        logTitle.getStyleClass().add("section-title");
+        activityLog.setPrefHeight(150);
+        activityLog.setMinHeight(100);
+        activityLog.setAccessibleText("Transfer history");
         VBox.setVgrow(activityLog, Priority.ALWAYS);
 
         getChildren().addAll(
@@ -138,7 +170,7 @@ public final class FileTransferPane extends VBox {
                 activityLog
         );
 
-        log("FileTransferPane initialized.");
+        sendOfferButton.getStyleClass().add("primary");
     }
 
     public void setUiDispatcher(Consumer<Runnable> dispatcher) {
@@ -150,52 +182,64 @@ public final class FileTransferPane extends VBox {
     }
 
     private VBox createSendSection() {
-        Label sectionTitle = new Label("Send File");
-        sectionTitle.setStyle("-fx-font-weight: bold; -fx-font-size: 14px;");
+        Label sectionTitle = new Label("Send a file");
+        sectionTitle.getStyleClass().add("section-title");
 
         recipientCombo.setPromptText("Select or enter recipient...");
         recipientCombo.setEditable(true);
         recipientCombo.setMaxWidth(Double.MAX_VALUE);
+        recipientCombo.setMinWidth(120);
+        recipientCombo.setAccessibleText("File recipient");
         HBox.setHgrow(recipientCombo, Priority.ALWAYS);
 
         Button chooseFileButton = new Button("Browse File...");
+        chooseFileButton.setMinWidth(javafx.scene.layout.Region.USE_PREF_SIZE);
         chooseFileButton.setOnAction(e -> handleBrowseFile());
 
-        HBox recipientRow = new HBox(8, new Label("Recipient:"), recipientCombo, chooseFileButton);
+        Label recipientLabel = new Label("Recipient:");
+        recipientLabel.setMinWidth(javafx.scene.layout.Region.USE_PREF_SIZE);
+        sendOfferButton.setMinWidth(javafx.scene.layout.Region.USE_PREF_SIZE);
+        HBox recipientRow = new HBox(8, recipientLabel, recipientCombo, sendOfferButton);
         recipientRow.setAlignment(Pos.CENTER_LEFT);
 
-        fileHashLabel.setStyle("-fx-font-family: monospace; -fx-font-size: 11px; -fx-text-fill: #444444;");
+        fileHashLabel.getStyleClass().add("hash");
         fileHashLabel.setWrapText(true);
 
         sendOfferButton.setDisable(true);
         sendOfferButton.setOnAction(e -> handleSendOffer());
 
-        HBox actionRow = new HBox(12, sendOfferButton, selectedFileLabel);
-        actionRow.setAlignment(Pos.CENTER_LEFT);
+        selectedFileLabel.setWrapText(true);
+        selectedFileLabel.setMinWidth(0);
+        HBox.setHgrow(selectedFileLabel, Priority.ALWAYS);
+        HBox fileRow = new HBox(12, chooseFileButton, selectedFileLabel);
+        fileRow.setAlignment(Pos.CENTER_LEFT);
 
-        VBox box = new VBox(8, sectionTitle, recipientRow, actionRow, fileHashLabel);
-        box.setStyle("-fx-border-color: #d0d0d0; -fx-border-radius: 4; -fx-padding: 8;");
+        TitledPane fingerprint = new TitledPane("File verification details", fileHashLabel);
+        fingerprint.setExpanded(false);
+        fingerprint.setAnimated(false);
+        VBox box = new VBox(8, sectionTitle, fileRow, recipientRow, fingerprint);
+        box.getStyleClass().add("transfer-card");
+        box.getStyleClass().add("card");
         return box;
     }
 
     private VBox createProgressSection() {
         Label progressTitle = new Label("Transfer Progress");
-        progressTitle.setStyle("-fx-font-weight: bold;");
+        progressTitle.getStyleClass().add("section-title");
 
         progressBar.setMaxWidth(Double.MAX_VALUE);
         progressBar.setProgress(0.0);
 
-        HBox labelsRow = new HBox(16, statusLabel, progressTextLabel);
-        labelsRow.setAlignment(Pos.CENTER_LEFT);
+        VBox labelsRow = new VBox(4, statusLabel, progressTextLabel);
 
         VBox box = new VBox(6, progressTitle, progressBar, labelsRow);
-        box.setStyle("-fx-background-color: #f7f9fa; -fx-border-color: #e2e8f0; -fx-border-radius: 4; -fx-padding: 8;");
+        box.getStyleClass().add("card");
         return box;
     }
 
     private void handleBrowseFile() {
         FileChooser chooser = new FileChooser();
-        chooser.setTitle("Select File to Transfer (Max 20 MiB)");
+        chooser.setTitle("Select File to Transfer (up to 20 MiB)");
         File file = chooser.showOpenDialog(getScene() != null ? getScene().getWindow() : null);
         if (file == null) {
             return;
@@ -210,7 +254,8 @@ public final class FileTransferPane extends VBox {
         selectedFilePath = file.toPath();
         selectedFileSize = size;
         selectedFileLabel.setText(file.getName() + " (" + formatBytes(size) + ")");
-        fileHashLabel.setText("Calculating SHA-256...");
+        fileHashLabel.setText("Calculating the file fingerprint...");
+        Ui.feedback(statusLabel, INFORMATION, "Checking your file...");
         sendOfferButton.setDisable(true);
 
         backgroundExecutor.submit(() -> {
@@ -220,10 +265,12 @@ public final class FileTransferPane extends VBox {
                     selectedFileSha256 = sha256;
                     fileHashLabel.setText("SHA-256: " + sha256);
                     sendOfferButton.setDisable(false);
+                    Ui.feedback(statusLabel, NEUTRAL, "File ready. Choose a recipient and send a request.");
                 });
             } catch (Exception ex) {
                 dispatchUi(() -> {
-                    fileHashLabel.setText("Error hashing file: " + ex.getMessage());
+                    fileHashLabel.setText("Could not read this file.");
+                    Ui.feedback(statusLabel, ERROR, "Could not read this file. Choose another file and try again.");
                     sendOfferButton.setDisable(true);
                 });
             }
@@ -231,7 +278,8 @@ public final class FileTransferPane extends VBox {
     }
 
     private void handleSendOffer() {
-        String recipient = recipientCombo.getValue();
+        String recipient = recipientCombo.isEditable()
+                ? recipientCombo.getEditor().getText() : recipientCombo.getValue();
         if (recipient == null || recipient.isBlank()) {
             showAlert("Validation Error", "Please select or type a recipient.");
             return;
@@ -252,8 +300,11 @@ public final class FileTransferPane extends VBox {
         );
 
         pendingSendPaths.put(transferId, selectedFilePath);
-        log("Offering file '" + offer.fileName() + "' (" + formatBytes(offer.sizeBytes()) + ") to " + offer.toUser());
-        statusLabel.setText("Offer sent, waiting for " + offer.toUser() + "...");
+        log("Requested to send " + offer.fileName() + " to " + offer.toUser() + ".");
+        Ui.feedback(statusLabel, INFORMATION, "Request sent. Waiting for " + offer.toUser() + " to accept.");
+        Ui.tone(progressBar, NEUTRAL);
+        progressBar.setProgress(0);
+        progressTextLabel.setText("Waiting for a response");
 
         if (onOfferRequested != null) {
             onOfferRequested.accept(offer);
@@ -273,33 +324,44 @@ public final class FileTransferPane extends VBox {
             IncomingOffer offer = new IncomingOffer(transferId, fromUser, fileName, sizeBytes, sha256);
             pendingIncomingOffers.put(transferId, offer);
             renderIncomingOfferCard(offer);
-            log("Received file offer from " + fromUser + ": " + fileName + " (" + formatBytes(sizeBytes) + ")");
+            log(fromUser + " wants to send you " + fileName + " (" + formatBytes(sizeBytes) + ").");
+            Ui.feedback(statusLabel, INFORMATION, "New file request from " + fromUser + ". Accept or decline below.");
         });
     }
 
     private void renderIncomingOfferCard(IncomingOffer offer) {
         VBox card = new VBox(6);
         card.setId("offer-card-" + offer.transferId());
-        card.setStyle("-fx-background-color: #edf2f7; -fx-padding: 8; -fx-border-color: #cbd5e0; -fx-border-radius: 4;");
+        card.getStyleClass().add("card");
 
-        Label info = new Label("From: " + offer.fromUser() + " | File: " + offer.fileName() + " (" + formatBytes(offer.sizeBytes()) + ")");
-        info.setStyle("-fx-font-weight: bold;");
+        Label info = new Label(offer.fileName() + " - " + formatBytes(offer.sizeBytes()));
+        Label sender = new Label("From " + offer.fromUser());
+        sender.getStyleClass().add("muted");
+        sender.setWrapText(true);
+        info.getStyleClass().add("section-title");
 
         Label hash = new Label("SHA-256: " + offer.sha256());
-        hash.setStyle("-fx-font-family: monospace; -fx-font-size: 10px; -fx-text-fill: #555555;");
+        hash.getStyleClass().add("hash");
+        hash.setWrapText(true);
+        info.setWrapText(true);
 
         Button acceptBtn = new Button("Accept");
-        acceptBtn.setStyle("-fx-background-color: #2b6cb0; -fx-text-fill: white; -fx-font-weight: bold;");
-        Button rejectBtn = new Button("Reject");
+        acceptBtn.getStyleClass().add("primary");
+        Button rejectBtn = new Button("Decline");
 
         HBox btnRow = new HBox(8, acceptBtn, rejectBtn);
-        card.getChildren().addAll(info, hash, btnRow);
+        TitledPane fingerprint = new TitledPane("File verification details", hash);
+        fingerprint.setAnimated(false);
+        fingerprint.setExpanded(false);
+        card.getStyleClass().add("transfer-card");
+        card.getChildren().addAll(info, sender, fingerprint, btnRow);
         incomingOffersBox.getChildren().add(card);
 
         rejectBtn.setOnAction(e -> {
             incomingOffersBox.getChildren().remove(card);
             pendingIncomingOffers.remove(offer.transferId());
-            log("Rejected file offer " + offer.fileName() + " from " + offer.fromUser());
+            log("Declined " + offer.fileName() + " from " + offer.fromUser() + ".");
+            Ui.feedback(statusLabel, WARNING, "File request declined.");
             if (onDecisionRequested != null) {
                 onDecisionRequested.accept(offer.transferId().toString(), false);
             }
@@ -319,7 +381,11 @@ public final class FileTransferPane extends VBox {
                 Alert confirm = new Alert(Alert.AlertType.CONFIRMATION);
                 confirm.setTitle("Confirm Overwrite");
                 confirm.setHeaderText("File already exists");
-                confirm.setContentText("Destination file '" + destinationFile.getName() + "' already exists. Overwrite?");
+                Label overwrite = new Label();
+                Ui.feedback(overwrite, WARNING, "Replace the existing file '" + destinationFile.getName() + "'? This will overwrite its contents.");
+                overwrite.setMaxWidth(420);
+                confirm.getDialogPane().setContent(overwrite);
+                styleDialog(confirm);
                 Optional<ButtonType> result = confirm.showAndWait();
                 if (result.isEmpty() || result.get() != ButtonType.OK) {
                     return;
@@ -327,7 +393,8 @@ public final class FileTransferPane extends VBox {
             }
 
             incomingOffersBox.getChildren().remove(card);
-            log("Accepted file offer " + offer.fileName() + " -> Save to " + destinationFile.getAbsolutePath());
+            log("Accepted " + offer.fileName() + " from " + offer.fromUser() + ".");
+            Ui.feedback(statusLabel, INFORMATION, "Request accepted. Preparing your file...");
             pendingSendPaths.put(offer.transferId(), destinationFile.toPath());
 
             if (onDecisionRequested != null) {
@@ -338,9 +405,12 @@ public final class FileTransferPane extends VBox {
 
     public void onFileReady(UUID transferId, String ticket, String host, int port, String role, long expiresAt) {
         dispatchUi(() -> {
-            log("FILE_READY received: transfer=" + transferId + ", role=" + role + ", host=" + host + ":" + port);
-            statusLabel.setText("Starting NIO transfer (" + role + ")...");
-            updateProgress(0, 100);
+            if ("RECEIVE".equalsIgnoreCase(role)) receivingTransfers.add(transferId);
+            log("Request accepted. Preparing your file...");
+            Ui.feedback(statusLabel, INFORMATION, "Request accepted. Preparing your file...");
+            Ui.tone(progressBar, INFORMATION);
+            progressBar.setProgress(ProgressBar.INDETERMINATE_PROGRESS);
+            progressTextLabel.setText("Waiting for file data...");
         });
 
         backgroundExecutor.submit(() -> {
@@ -350,18 +420,21 @@ public final class FileTransferPane extends VBox {
                     if (sendPath == null || !Files.exists(sendPath)) {
                         throw new IOException("Local file to send not found for transfer " + transferId);
                     }
-                    dispatchUi(() -> statusLabel.setText("Sending raw bytes via NIO..."));
+                    dispatchUi(() -> { if (!failedTransfers.contains(transferId) && !completedTransfers.contains(transferId))
+                        Ui.feedback(statusLabel, INFORMATION, "Sending your file..."); });
 
                     NioFileSender.sendFile(host, port, transferId, ticket, sendPath, (sent, totalBytes) -> {
                         dispatchUi(() -> {
+                            if (failedTransfers.contains(transferId) || completedTransfers.contains(transferId)) return;
                             updateProgress(sent, totalBytes);
                             progressTextLabel.setText(formatBytes(sent) + " / " + formatBytes(totalBytes));
                         });
                     });
 
                     dispatchUi(() -> {
-                        statusLabel.setText("File sent. Awaiting recipient verification...");
-                        log("All bytes streamed to server. Waiting for FILE_RESULT...");
+                        if (failedTransfers.contains(transferId) || completedTransfers.contains(transferId)) return;
+                        Ui.feedback(statusLabel, INFORMATION, "File uploaded. Waiting for delivery confirmation...");
+                        log("File uploaded. Waiting for delivery confirmation.");
                     });
 
                 } else if ("RECEIVE".equalsIgnoreCase(role)) {
@@ -375,27 +448,37 @@ public final class FileTransferPane extends VBox {
                         destination = Path.of(offer != null ? offer.fileName() : "downloaded_file");
                     }
 
-                    dispatchUi(() -> statusLabel.setText("Receiving raw bytes via NIO..."));
+                    dispatchUi(() -> { if (!failedTransfers.contains(transferId))
+                        Ui.feedback(statusLabel, INFORMATION, "Receiving your file..."); });
 
                     NioFileReceiver.receiveFile(host, port, transferId, ticket, expectedBytes, expectedHash, destination,
                             (recv, totalBytes) -> {
                                 dispatchUi(() -> {
+                                    if (failedTransfers.contains(transferId) || completedTransfers.contains(transferId)) return;
                                     updateProgress(recv, totalBytes);
                                     progressTextLabel.setText(formatBytes(recv) + " / " + formatBytes(totalBytes));
                                 });
                             });
 
                     dispatchUi(() -> {
-                        statusLabel.setText("File received and SHA-256 verified!");
-                        log("File received successfully and saved to: " + pendingSendPaths.get(transferId));
+                        if (failedTransfers.contains(transferId)) return;
+                        verifiedDownloads.add(transferId);
+                        completedTransfers.add(transferId);
+                        Ui.feedback(statusLabel, SUCCESS, "File received successfully. File verification passed.");
+                        Ui.tone(progressBar, SUCCESS);
+                        progressBar.setProgress(1.0);
+                        progressTextLabel.setText("100% complete");
+                        log("File received successfully. File verification passed.");
                     });
                 }
             } catch (Exception ex) {
                 LOGGER.log(Level.WARNING, "NIO Transfer failed for " + transferId, ex);
                 dispatchUi(() -> {
-                    statusLabel.setText("Transfer failed: " + ex.getMessage());
-                    log("Transfer error (" + role + "): " + ex.getMessage());
-                    showAlert("Transfer Failed", ex.getMessage());
+                    failedTransfers.add(transferId);
+                    Ui.feedback(statusLabel, ERROR, "Transfer failed. Check your connection and try again.");
+                    Ui.tone(progressBar, ERROR);
+                    log("Transfer could not finish. Check the connection and retry.");
+                    showAlert("Transfer failed", "The file could not be transferred. Check the connection and try again.");
                 });
             }
         });
@@ -403,13 +486,33 @@ public final class FileTransferPane extends VBox {
 
     public void onFileResult(UUID transferId, String status, String code, String message) {
         dispatchUi(() -> {
+            // Keep protocol diagnostics out of normal user feedback.
+            LOGGER.log(Level.FINE, "File result: status={0}, code={1}", new Object[]{status, code});
             boolean success = "SUCCESS".equalsIgnoreCase(status);
-            statusLabel.setText("Transfer " + status + ": " + message);
-            if (success) {
-                updateProgress(100, 100);
-                progressTextLabel.setText("100% Completed");
+            boolean declined = "REJECTED".equalsIgnoreCase(status) || "CANCELLED".equalsIgnoreCase(status);
+            if (success && !failedTransfers.contains(transferId)) {
+                if (receivingTransfers.contains(transferId) && !verifiedDownloads.contains(transferId)) {
+                    Ui.feedback(statusLabel, INFORMATION, "File delivered. Checking your received file...");
+                    Ui.tone(progressBar, INFORMATION);
+                } else {
+                    completedTransfers.add(transferId);
+                    String text = receivingTransfers.contains(transferId)
+                            ? "File received successfully. File verification passed." : "File sent successfully.";
+                    Ui.feedback(statusLabel, SUCCESS, text);
+                    Ui.tone(progressBar, SUCCESS);
+                    progressBar.setProgress(1.0);
+                    progressTextLabel.setText("100% complete");
+                    log(text);
+                }
+            } else if (!success) {
+                failedTransfers.add(transferId);
+                Ui.Tone tone = declined ? WARNING : ERROR;
+                String text = declined ? "File request declined or cancelled." : Ui.transferError(code);
+                Ui.feedback(statusLabel, tone, text);
+                Ui.tone(progressBar, tone);
+                progressTextLabel.setText(declined ? "Transfer stopped" : "Transfer incomplete");
+                log(text);
             }
-            log("FILE_RESULT: " + status + " [" + code + "] - " + message);
             pendingSendPaths.remove(transferId);
             pendingIncomingOffers.remove(transferId);
         });
@@ -417,9 +520,13 @@ public final class FileTransferPane extends VBox {
 
     public void onError(String code, String message) {
         dispatchUi(() -> {
-            statusLabel.setText("Error: " + code);
-            log("ERROR: [" + code + "] " + message);
-            showAlert("Server Error [" + code + "]", message);
+            LOGGER.log(Level.FINE, "File request error: {0}", code);
+            String text = Ui.transferError(code);
+            progressTextLabel.setText("Request unsuccessful");
+            Ui.feedback(statusLabel, ERROR, text);
+            Ui.tone(progressBar, ERROR);
+            log(text);
+            showAlert("File request unsuccessful", text);
         });
     }
 
@@ -440,9 +547,14 @@ public final class FileTransferPane extends VBox {
             pendingSendPaths.clear();
             pendingIncomingOffers.clear();
             progressBar.setProgress(0.0);
-            progressTextLabel.setText("Idle");
-            statusLabel.setText("Ready");
-            log("Reset transfer state for new connection.");
+            failedTransfers.clear();
+            receivingTransfers.clear();
+            verifiedDownloads.clear();
+            completedTransfers.clear();
+            progressTextLabel.setText("No transfer in progress");
+            Ui.feedback(statusLabel, NEUTRAL, "Ready to share a file.");
+            Ui.tone(progressBar, NEUTRAL);
+            log("Ready for a new connection.");
         });
     }
 
@@ -465,14 +577,27 @@ public final class FileTransferPane extends VBox {
     }
 
     private void showAlert(String title, String content) {
+        Ui.feedback(statusLabel, ERROR, content);
+        Ui.tone(progressBar, ERROR);
         try {
-            Alert alert = new Alert(Alert.AlertType.INFORMATION);
+            Alert alert = new Alert(Alert.AlertType.ERROR);
             alert.setTitle(title);
             alert.setHeaderText(null);
-            alert.setContentText(content);
+            Label feedback = new Label();
+            Ui.feedback(feedback, ERROR, content);
+            feedback.setMaxWidth(420);
+            alert.getDialogPane().setContent(feedback);
+            styleDialog(alert);
             alert.show();
         } catch (Exception ignored) {
             // Headless / non-GUI environments
+        }
+    }
+
+    private void styleDialog(Alert alert) {
+        if (getScene() != null) {
+            alert.initOwner(getScene().getWindow());
+            alert.getDialogPane().getStylesheets().addAll(getScene().getStylesheets());
         }
     }
 

@@ -8,8 +8,9 @@ import com.netconnect.client.transfer.FileTransferPane;
 import com.netconnect.client.discovery.OnlineUsersPane;
 import javafx.application.Application;
 import javafx.application.Platform;
-import javafx.geometry.Insets;
 import javafx.scene.Scene;
+import com.netconnect.client.ui.Ui;
+import static com.netconnect.client.ui.Ui.Tone.*;
 import javafx.scene.control.*;
 import javafx.scene.layout.*;
 import javafx.stage.Stage;
@@ -38,24 +39,25 @@ public final class NetConnectClient extends Application {
     @Override public void start(Stage stage) {
         this.stage = stage;
         stage.setTitle("NetConnect");
-        stage.setMinWidth(560);
-        stage.setMinHeight(700);
+        stage.setMinWidth(760);
+        stage.setMinHeight(540);
         showLogin();
         stage.show();
     }
-    private void showLogin() {
+    private void showLogin() { showLogin(null); }
+    private void showLogin(String message) {
         var pane = new SecureLoginPane(login, NetConnectConfig.load(), this::authenticated);
+        if (message != null) pane.showConnectionNotice(message);
         ScrollPane scroll = new ScrollPane(pane);
         scroll.setFitToWidth(true);
         scroll.setFitToHeight(true);
-        stage.setScene(new Scene(scroll, 720, 740));
+        stage.setScene(styledScene(scroll, 1000, 680));
     }
     private void authenticated(Envelope result) {
         if (stopped) return;
         try {
             var connection = new AuthenticatedControlConnection(login.detachAuthenticatedSocket(), result.sessionId());
             control = connection;
-            var config = NetConnectConfig.load();
             var users = new OnlineUsersPane();
             transfers = new FileTransferPane();
             var filePane = transfers;
@@ -66,15 +68,86 @@ public final class NetConnectClient extends Application {
             filePane.setOnDecisionRequested((id, accept) -> connection.send(EventType.FILE_DECISION,
                     JsonNodeFactory.instance.objectNode().put("transferId", id).put("accept", accept)));
             Button logout = new Button("Disconnect");
-            logout.setOnAction(event -> connection.close());
-            VBox header = new VBox(8, new Label("NetConnect"),
-                    new Label("Connected over verified TLS as " + result.payload().path("displayName").asText()), logout,
-                    new Label("Configured server: " + config.serverHost() + ":" + config.controlPort()));
-            header.setPadding(new Insets(12));
-            TabPane navigation = new TabPane(new Tab("Chat", new Label()),
-                    new Tab("Online Users", users), new Tab("File Transfers", filePane));
-            navigation.setTabClosingPolicy(TabPane.TabClosingPolicy.UNAVAILABLE);
-            stage.setScene(new Scene(new BorderPane(navigation, header, null, null, null), 860, 740));
+            boolean[] disconnectRequested = {false};
+            logout.setOnAction(event -> {
+                disconnectRequested[0] = true;
+                logout.setDisable(true);
+                connection.close();
+            });
+            logout.setGraphic(Ui.icon("disconnect"));
+            String displayName = result.payload().path("displayName").asText();
+            users.setCurrentUser(displayName);
+            StackPane brandLogo = new StackPane(Ui.icon("network"));
+            brandLogo.getStyleClass().add("sidebar-logo");
+            Label brand = new Label("NetConnect", brandLogo);
+            brand.getStyleClass().add("sidebar-brand");
+            Label account = new Label(displayName);
+            account.getStyleClass().add("sidebar-account");
+            account.setWrapText(true);
+            account.setMinWidth(0);
+            Label profileStatus = new Label("Connected");
+            profileStatus.getStyleClass().add("profile-status");
+            profileStatus.setGraphic(Ui.icon("check"));
+            VBox identity = new VBox(4, account, profileStatus);
+            identity.setMinWidth(0);
+            HBox profile = new HBox(10, Ui.avatar(displayName), identity);
+            profile.setAlignment(javafx.geometry.Pos.CENTER_LEFT);
+            profile.getStyleClass().add("profile");
+            HBox.setHgrow(identity, Priority.ALWAYS);
+            Label secure = new Label();
+            Ui.feedback(secure, SUCCESS, "Secure connection");
+            secure.getStyleClass().add("connection-status");
+            Label pageTitle = new Label("Chat");
+            pageTitle.getStyleClass().add("page-title");
+            Region headerSpacer = new Region();
+            HBox.setHgrow(headerSpacer, Priority.ALWAYS);
+            HBox header = new HBox(16, pageTitle, headerSpacer, secure);
+            header.getStyleClass().add("page-header");
+            Label chatTitle = new Label("Your conversations start here");
+            chatTitle.getStyleClass().add("section-title");
+            Label chatDescription = new Label("Chat is not available yet.\nYou can view online users and share files.");
+            chatDescription.setWrapText(true);
+            chatDescription.getStyleClass().add("muted");
+            VBox chat = new VBox(12, chatTitle, chatDescription);
+            chat.setAlignment(javafx.geometry.Pos.CENTER);
+            chat.getStyleClass().add("empty-state");
+            BorderPane content = new BorderPane(chat, header, null, null, null);
+            ToggleGroup group = new ToggleGroup();
+            VBox links = new VBox(6);
+            javafx.scene.Node[] pages = {chat, users, filePane};
+            String[] titles = {"Chat", "Online Users", "File Transfers"};
+            String[] icons = {"chat", "users", "file"};
+            ScrollPane transferScroll = new ScrollPane(filePane);
+            transferScroll.setFitToWidth(true);
+            transferScroll.setFitToHeight(true);
+            pages[2] = transferScroll;
+            for (int i = 0; i < titles.length; i++) {
+                final int index = i;
+                ToggleButton link = new ToggleButton(titles[i]);
+                link.getStyleClass().add("nav-item");
+                link.setGraphic(Ui.icon(icons[i]));
+                link.setAccessibleText(titles[i]);
+                link.setMinHeight(44);
+                link.setMaxWidth(Double.MAX_VALUE);
+                link.setToggleGroup(group);
+                link.setSelected(i == 0);
+                link.setOnAction(event -> {
+                    link.setSelected(true);
+                    pageTitle.setText(titles[index]);
+                    content.setCenter(pages[index]);
+                });
+                links.getChildren().add(link);
+            }
+            Region spacer = new Region();
+            VBox.setVgrow(spacer, Priority.ALWAYS);
+            logout.getStyleClass().add("sidebar-action");
+            logout.setMaxWidth(Double.MAX_VALUE);
+            VBox sidebar = new VBox(20, brand, links, spacer, profile, logout);
+            sidebar.getStyleClass().add("sidebar");
+            sidebar.setPrefWidth(224);
+            sidebar.setMinWidth(224);
+            stage.setScene(styledScene(new BorderPane(content, null, null, null, sidebar),
+                    1000, 680));
             connection.start(envelope -> Platform.runLater(() -> {
                 if (control != connection || stopped) return;
                 var p = envelope.payload();
@@ -96,9 +169,18 @@ public final class NetConnectClient extends Application {
                 }
             }), () -> Platform.runLater(() -> {
                 filePane.shutdown();
-                if (control == connection) { control = null; transfers = null; if (!stopped) showLogin(); }
+                if (control == connection) { control = null; transfers = null; if (!stopped) showLogin(disconnectRequested[0]
+                        ? "Disconnected. You can connect again when you're ready."
+                        : "Connection lost. Check your network and connect again."); }
             }));
         } catch (java.io.IOException failure) { showLogin(); }
+    }
+    private Scene styledScene(javafx.scene.Parent root, double width, double height) {
+        Scene previous = stage.getScene();
+        Scene scene = new Scene(root, previous == null ? width : previous.getWidth(),
+                previous == null ? height : previous.getHeight());
+        scene.getStylesheets().add(SecureLoginPane.class.getResource("security-login.css").toExternalForm());
+        return scene;
     }
     @Override public void stop() {
         stopped = true;

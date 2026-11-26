@@ -3,6 +3,8 @@ package com.netconnect.client.discovery;
 import java.util.List;
 import java.util.Objects;
 import javafx.application.Platform;
+import com.netconnect.client.ui.Ui;
+import static com.netconnect.client.ui.Ui.Tone.*;
 import javafx.geometry.Insets;
 import javafx.scene.control.Label;
 import javafx.scene.control.ListView;
@@ -20,6 +22,10 @@ public final class OnlineUsersPane extends VBox {
     private final ListView<String> users = new ListView<>();
     private final Label liveness = new Label();
 
+    private String currentUser;
+
+    public void setCurrentUser(String name) { currentUser = name; users.refresh(); }
+
     public OnlineUsersPane() {
         if (!Platform.isFxApplicationThread()) {
             throw new IllegalStateException("Construct OnlineUsersPane on the JavaFX Application Thread");
@@ -27,14 +33,36 @@ public final class OnlineUsersPane extends VBox {
         setSpacing(12);
         setPadding(new Insets(16));
         Label heading = new Label("Online users");
-        heading.setStyle("-fx-font-size: 18px; -fx-font-weight: bold;");
-        users.setPlaceholder(new Label("No users in the current TLS roster"));
+        heading.getStyleClass().add("section-title");
+        users.setCellFactory(list -> new javafx.scene.control.ListCell<>() {
+            @Override protected void updateItem(String name, boolean empty) {
+                super.updateItem(name, empty);
+                setText(null);
+                if (empty || name == null) { setGraphic(null); return; }
+                Label avatar = Ui.avatar(name);
+                Label identity = new Label(name + (name.equals(currentUser) ? "  (you)" : ""));
+                Label status = new Label("Online");
+                Ui.feedback(status, SUCCESS, "Online");
+                identity.setMinWidth(0);
+                identity.setWrapText(true);
+                javafx.scene.layout.Region spacer = new javafx.scene.layout.Region();
+                javafx.scene.layout.HBox row = new javafx.scene.layout.HBox(14, avatar, identity, spacer, status);
+                row.setAlignment(javafx.geometry.Pos.CENTER_LEFT);
+                javafx.scene.layout.HBox.setHgrow(spacer, Priority.ALWAYS);
+                setGraphic(row);
+                setAccessibleText(name + (name.equals(currentUser) ? ", you, online" : ", online"));
+            }
+        });
+        users.setPlaceholder(new Label("No one is online yet"));
         users.setFocusTraversable(true);
-        users.setAccessibleText("Online users from the authenticated TLS roster");
+        users.setAccessibleText("Online users");
         liveness.setWrapText(true);
-        Label explanation = new Label("UDP hints indicate server liveness only. Missing hints do not change the TLS roster.");
+        Label explanation = new Label("Connection checks do not change the list of people signed in.");
         explanation.setWrapText(true);
-        getChildren().addAll(heading, count, users, liveness, explanation);
+        javafx.scene.control.TitledPane details = new javafx.scene.control.TitledPane("Connection details", new VBox(6, liveness, explanation));
+        details.setAnimated(false);
+        details.setExpanded(false);
+        getChildren().addAll(heading, count, users, details);
         VBox.setVgrow(users, Priority.ALWAYS);
         render();
     }
@@ -70,13 +98,13 @@ public final class OnlineUsersPane extends VBox {
 
     private void render() {
         users.getItems().setAll(state.users());
-        count.setText(state.revision() < 0 ? "Waiting for authenticated TLS roster"
-                : state.users().size() + " online (TLS roster)");
-        liveness.setText(state.livenessText());
-        liveness.setStyle(switch (state.liveness()) {
-            case WAITING -> "-fx-text-fill: #555555;";
-            case FRESH -> "-fx-text-fill: #21643b;";
-            case EXPIRED -> "-fx-text-fill: #805000;";
+        Ui.feedback(count, state.revision() < 0 ? INFORMATION : NEUTRAL, state.revision() < 0
+                ? "Loading people signed in..." : state.users().size() + (state.users().size() == 1 ? " person online" : " people online"));
+        Ui.feedback(liveness, state.liveness() == PresenceLiveness.State.FRESH ? SUCCESS
+                : state.liveness() == PresenceLiveness.State.EXPIRED ? WARNING : NEUTRAL, switch (state.liveness()) {
+            case WAITING -> "No background connection check received yet.";
+            case FRESH -> "Background connection check received recently.";
+            case EXPIRED -> "No recent background connection check. Your signed-in list is unchanged.";
         });
     }
 

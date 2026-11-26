@@ -4,6 +4,8 @@ import com.netconnect.common.config.NetConnectConfig;
 import com.netconnect.common.protocol.EventType;
 import com.netconnect.common.protocol.Envelope;
 import javafx.concurrent.Task;
+import com.netconnect.client.ui.Ui;
+import static com.netconnect.client.ui.Ui.Tone.*;
 import javafx.geometry.Insets;
 import javafx.scene.control.*;
 import javafx.scene.layout.VBox;
@@ -13,19 +15,24 @@ import java.util.function.Consumer;
 
 /** Reusable security-only view; exposes authentication to a future shell without owning it. */
 public final class SecureLoginPane extends VBox {
+    private final Label connectionFeedback = new Label();
     public SecureLoginPane(SecureLoginConnection connection, NetConnectConfig config) {
         this(connection, config, ignored -> { });
     }
 
     public SecureLoginPane(SecureLoginConnection connection, NetConnectConfig config, Consumer<Envelope> onAuthenticated) {
         super(12);
-        setPadding(new Insets(30));
+        setPadding(new Insets(32));
+        setAlignment(javafx.geometry.Pos.CENTER);
         getStyleClass().add("security-login");
         var css = getClass().getResource("security-login.css");
         if (css != null) getStylesheets().add(css.toExternalForm());
+        Label mark = new Label();
+        mark.setGraphic(Ui.icon("network"));
+        mark.getStyleClass().add("brand-mark");
         Label title = new Label("NetConnect");
         title.getStyleClass().add("brand");
-        Label subtitle = new Label("Secure connections for your local network");
+        Label subtitle = new Label("Your local network, connected securely");
         subtitle.setWrapText(true);
         TextField name = new TextField();
         name.setPromptText("Display name (3-24 characters)");
@@ -40,46 +47,58 @@ public final class SecureLoginPane extends VBox {
         Button login = new Button("Connect securely");
         login.setDefaultButton(true);
         login.setMaxWidth(Double.MAX_VALUE);
-        Label feedback = new Label("Ready - TLS certificate verification enabled");
+        Label feedback = connectionFeedback;
+        Ui.feedback(feedback, INFORMATION, "Ready to connect securely.");
         feedback.setAccessibleRole(javafx.scene.AccessibleRole.TEXT);
         feedback.setWrapText(true);
-        feedback.setMinHeight(50);
+        feedback.setMinHeight(44);
+        feedback.getStyleClass().add("feedback");
+        feedback.setMaxWidth(440);
         ProgressIndicator progress = new ProgressIndicator();
         progress.setMaxSize(24, 24);
         progress.setVisible(false);
         progress.managedProperty().bind(progress.visibleProperty());
-        VBox form = new VBox(8, new Label("Display name"), name, new Label("Access code"), code,
-                new Label("Server host"), host, new Label("Control port"), port, login);
+        VBox settings = new VBox(8, new Label("Server host"), host, new Label("Control port"), port);
+        TitledPane advanced = new TitledPane("Connection settings", settings);
+        advanced.setAnimated(false);
+        advanced.setExpanded(false);
+        VBox form = new VBox(10, new Label("Display name"), name, new Label("Access code"), code, advanced, login);
+        form.getStyleClass().add("card");
+        form.setMaxWidth(440);
+        login.getStyleClass().add("primary");
         Label identity = new Label();
         identity.setWrapText(true);
         Button disconnect = new Button("Disconnect");
-        VBox authenticated = new VBox(14, new Label("Authentication successful"), identity,
-                new Label("Session status: authenticated over TLS"), disconnect);
+        VBox authenticated = new VBox(14, new Label("You're connected"), identity,
+                new Label("Secure connection"), disconnect);
         authenticated.setVisible(false);
         authenticated.managedProperty().bind(authenticated.visibleProperty());
         form.managedProperty().bind(form.visibleProperty());
-        getChildren().addAll(title, subtitle, new Separator(), form, authenticated, progress, feedback);
+        Label security = new Label("Server identity is checked before you connect");
+        security.getStyleClass().add("muted");
+        security.setWrapText(true);
+        getChildren().addAll(mark, title, subtitle, form, authenticated, progress, feedback, security);
         login.setOnAction(event -> {
             String displayName = name.getText();
             if (displayName.isBlank() || displayName.length() < 3 || displayName.length() > 24
                     || displayName.codePoints().anyMatch(Character::isISOControl)) {
-                feedback.setText("Display name must contain 3-24 characters without control characters.");
+                Ui.feedback(feedback, ERROR, "Use a display name with 3-24 characters and no control characters.");
                 return;
             }
             String secret = code.getText();
-            if (secret.isBlank()) { feedback.setText("Enter an access code."); return; }
+            if (secret.isBlank()) { Ui.feedback(feedback, ERROR, "Enter your access code."); return; }
             NetConnectConfig target;
             try {
                 target = new NetConnectConfig(host.getText().strip(), Integer.parseInt(port.getText()),
                         config.udpPort(), config.transferPort(), config.fileStagingDirectory(), config.clientDownloadDirectory());
             } catch (IllegalArgumentException invalid) {
-                feedback.setText("Enter a server host and a port between 1 and 65535.");
+                Ui.feedback(feedback, ERROR, "Enter the server address and a port between 1 and 65535.");
                 return;
             }
             code.clear();
             form.setDisable(true);
             progress.setVisible(true);
-            feedback.setText("Connecting - verifying server certificate...");
+            Ui.feedback(feedback, INFORMATION, "Connecting... Checking the server's identity.");
             Task<Envelope> task = new Task<>() {
                 @Override protected Envelope call() throws Exception { return connection.login(target, displayName, secret); }
             };
@@ -91,13 +110,14 @@ public final class SecureLoginPane extends VBox {
                     identity.setText("Signed in as " + displayName);
                     form.setVisible(false);
                     authenticated.setVisible(true);
-                    feedback.setText("Connected securely. Disconnect when finished.");
+                    Ui.feedback(feedback, SUCCESS, "Connected securely.");
                     onAuthenticated.accept(task.getValue());
                 } else {
-                    feedback.setText(switch (task.getValue().payload().path("code").asText()) {
+                    Ui.feedback(feedback, ERROR, switch (task.getValue().payload().path("code").asText()) {
                         case "NAME_TAKEN" -> "That display name is already in use.";
                         case "INVALID_REQUEST" -> "Check your display name and access code.";
-                        default -> "Login denied. Check your access code.";
+                        case "ACCESS_DENIED" -> "Unable to sign in. Check your access code or contact the server owner.";
+                        default -> "Unable to sign in. Please try again or contact the server owner.";
                     });
                     code.requestFocus();
                 }
@@ -105,17 +125,18 @@ public final class SecureLoginPane extends VBox {
             task.setOnFailed(done -> {
                 form.setDisable(false);
                 progress.setVisible(false);
-                feedback.setText(task.getException() instanceof SSLException
-                        ? "TLS verification failed. Check the trusted certificate and server hostname."
+                Ui.feedback(feedback, ERROR, task.getException() instanceof SSLException
+                        ? "Unable to verify the server's identity. Check the server address or contact the server owner."
                         : task.getException() instanceof SocketTimeoutException
-                        ? "Connection timed out. Check the server and retry."
-                        : "Could not connect securely. Check the server address and retry.");
+                        ? "The server took too long to respond. Check the address and try again."
+                        : "The server is unavailable. Check the address and your connection, then try again.");
                 code.requestFocus();
             });
             run(task);
         });
         disconnect.setOnAction(event -> {
             disconnect.setDisable(true);
+            Ui.feedback(feedback, INFORMATION, "Disconnecting...");
             Task<Void> close = new Task<>() {
                 @Override protected Void call() throws Exception { connection.close(); return null; }
             };
@@ -123,12 +144,16 @@ public final class SecureLoginPane extends VBox {
                 disconnect.setDisable(false);
                 authenticated.setVisible(false);
                 form.setVisible(true);
-                feedback.setText("Disconnected. Ready to connect again.");
+                Ui.feedback(feedback, NEUTRAL, "Disconnected. You can connect again when you're ready.");
             });
-            close.setOnFailed(done -> { disconnect.setDisable(false); feedback.setText("Unable to disconnect. Retry."); });
+            close.setOnFailed(done -> { disconnect.setDisable(false); Ui.feedback(feedback, ERROR, "Could not disconnect. Please try again."); });
             run(close);
         });
     }
+    public void showConnectionNotice(String message) {
+        Ui.feedback(connectionFeedback, message.startsWith("Connection lost") ? WARNING : NEUTRAL, message);
+    }
+
     private static void run(Task<?> task) {
         Thread worker = new Thread(task, "security-login");
         worker.setDaemon(true);

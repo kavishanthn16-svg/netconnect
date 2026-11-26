@@ -28,9 +28,14 @@ public final class SecureLoginLauncher extends Application {
     @Override public void start(Stage stage) {
         SecureLoginPane pane = new SecureLoginPane(connection, NetConnectConfig.load());
         stage.setTitle("NetConnect");
-        stage.setScene(new Scene(pane, 560, 650));
+        javafx.scene.control.ScrollPane scroll = new javafx.scene.control.ScrollPane(pane);
+        scroll.setFitToWidth(true);
+        scroll.setFitToHeight(true);
+        Scene scene = new Scene(scroll, 600, 680);
+        scene.getStylesheets().add(SecureLoginPane.class.getResource("security-login.css").toExternalForm());
+        stage.setScene(scene);
         stage.setMinWidth(440);
-        stage.setMinHeight(610);
+        stage.setMinHeight(540);
         stage.show();
     }
 
